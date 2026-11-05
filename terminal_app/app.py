@@ -442,24 +442,50 @@ with st.container(border=True):
 
 with st.container(border=True):
     st.subheader("League performance")
-    st.caption("Mean Betty log loss by league; lower values indicate better probabilistic accuracy.")
+    st.caption(
+        "Edge per match = market log loss minus Betty log loss; positive favors Betty. "
+        "Backtest matches only. Leagues with n below 200 are low sample."
+    )
+    backtest = scored.loc[scored["phase"] == "Backtest"]
     league_summary = (
-        scored.groupby("league", as_index=False)["betty_log_loss"]
-        .mean()
-        .sort_values("betty_log_loss", ascending=True)
+        backtest.groupby("league", as_index=False)
+        .agg(
+            matches=("betty_log_loss", "size"),
+            betty_log_loss=("betty_log_loss", "mean"),
+            market_log_loss=("market_log_loss", "mean"),
+        )
+    )
+    league_summary["edge_per_match"] = (
+        league_summary["market_log_loss"] - league_summary["betty_log_loss"]
     )
     league_summary["league"] = league_summary["league"].map(LEAGUE_NAMES).fillna(
         league_summary["league"]
     )
+    league_summary["label"] = league_summary.apply(
+        lambda row: f"{row['league']} (n={row['matches']:,})",
+        axis=1,
+    )
+    league_summary = league_summary.sort_values("edge_per_match", ascending=True)
     league_figure = go.Figure(
         go.Bar(
-            x=league_summary["betty_log_loss"],
-            y=league_summary["league"],
+            x=league_summary["edge_per_match"],
+            y=league_summary["label"],
             orientation="h",
-            marker_color=ACCENT,
-            hovertemplate="League %{y}<br>Mean log loss %{x:.4f}<extra></extra>",
+            marker_color=[
+                ACCENT if edge >= 0 else "#c9575f"
+                for edge in league_summary["edge_per_match"]
+            ],
+            customdata=league_summary[
+                ["matches", "betty_log_loss", "market_log_loss"]
+            ],
+            hovertemplate=(
+                "League %{y}<br>Edge per match %{x:+.4f}"
+                "<br>Betty %{customdata[1]:.4f} | Market %{customdata[2]:.4f}"
+                "<br>n=%{customdata[0]:,}<extra></extra>"
+            ),
         )
     )
+    league_figure.add_vline(x=0, line_color="#72808c", line_dash="dot")
     league_figure.update_layout(
         template="plotly_dark",
         paper_bgcolor=PLOT_BACKGROUND,
@@ -467,7 +493,7 @@ with st.container(border=True):
         font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
         hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
         margin={"l": 12, "r": 12, "t": 24, "b": 12},
-        xaxis_title="Mean Betty log loss",
+        xaxis_title="Mean market log loss minus Betty log loss (per match)",
         yaxis_title="League",
         xaxis={
             "gridcolor": PLOT_GRID,
@@ -481,7 +507,7 @@ with st.container(border=True):
         yaxis={
             "gridcolor": PLOT_GRID,
             "categoryorder": "array",
-            "categoryarray": league_summary["league"],
+            "categoryarray": league_summary["label"],
             "showspikes": True,
             "spikemode": "across",
             "spikesnap": "cursor",
@@ -494,7 +520,7 @@ with st.container(border=True):
         league_figure,
         width="stretch",
         config={"displayModeBar": False},
-        alt="Mean Betty log loss for each league, sorted from lowest to highest.",
+        alt="Edge per match by league, market log loss minus Betty log loss; negative values mean the market was better.",
     )
 
 with st.container(border=True):
