@@ -9,6 +9,7 @@ import streamlit as st
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "backtest_predictions_v1.csv"
 FORWARD_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "forward_scores_matches.csv"
+FORWARD_MODEL_VERSION = "v1"
 OUTCOME_INDEX = {"H": 0, "D": 1, "A": 2}
 PROBABILITY_COLUMNS = ["p_home", "p_draw", "p_away"]
 MARKET_COLUMNS = ["bookie_home", "bookie_draw", "bookie_away"]
@@ -94,7 +95,7 @@ def load_and_process_data(
     forward_data_path: str,
     forward_data_version: tuple[int, int],
 ) -> tuple[pd.DataFrame, int]:
-    """Load and score backtest and v2 forward exports, caching by file metadata."""
+    """Load and score the backtest and Core (v1) forward rows to match, caching by file metadata."""
     del data_version, forward_data_version
     data = pd.read_csv(data_path)
     forward = pd.read_csv(forward_data_path)
@@ -128,7 +129,9 @@ def load_and_process_data(
         )
 
     data["phase"] = "Backtest"
-    forward = forward.loc[forward["model_version"].astype("string").str.lower() == "v2"]
+    forward = forward.loc[
+        forward["model_version"].astype("string").str.lower() == FORWARD_MODEL_VERSION
+    ]
     forward = forward.rename(
         columns={"FTR": "actual_result", "match_date": "date"}
     ).copy()
@@ -204,6 +207,11 @@ def load_and_process_data(
 st.set_page_config(page_title="Betty Terminal", layout="wide")
 st.title("Betty Terminal")
 st.caption("Match outcome analytics · read-only backtest export")
+st.caption(
+    "Model: Betty Core (v1), results-only Dixon-Coles. Backtest: 6,534 walk-forward matches. "
+    "Forward test: live matches scored after prediction. Market baseline: proportionally "
+    "de-vigged closing odds."
+)
 
 try:
     data_stat = DATA_PATH.stat()
