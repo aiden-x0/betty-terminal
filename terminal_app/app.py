@@ -88,6 +88,39 @@ def _prediction_values_are_valid(values: np.ndarray) -> np.ndarray:
     )
 
 
+@st.cache_data(show_spinner=False)
+def bootstrap_cumulative_band(
+    edges: np.ndarray,
+    n_checkpoints: int = 60,
+    n_boot: int = 1000,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Replicate paired_logloss_diff_ci for cumulative sums of edge prefixes."""
+    edges = np.asarray(edges, dtype=float)
+    n = len(edges)
+    if n < 10:
+        return np.full(n, np.nan), np.full(n, np.nan)
+
+    checkpoints = np.unique(np.rint(np.linspace(10, n, n_checkpoints)).astype(int))
+    rng = np.random.default_rng(seed)
+    lower_checkpoints = []
+    upper_checkpoints = []
+    for checkpoint in checkpoints:
+        boot_sums = []
+        for start in range(0, n_boot, 250):
+            resamples = min(250, n_boot - start)
+            indices = rng.integers(0, checkpoint, size=(resamples, checkpoint))
+            boot_sums.extend(edges[:checkpoint][indices].sum(axis=1))
+        lower, upper = np.percentile(boot_sums, [2.5, 97.5])
+        lower_checkpoints.append(lower)
+        upper_checkpoints.append(upper)
+
+    positions = np.arange(1, n + 1)
+    lower = np.interp(positions, checkpoints, lower_checkpoints, left=np.nan)
+    upper = np.interp(positions, checkpoints, upper_checkpoints, left=np.nan)
+    return lower, upper
+
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
     data_path: str,
@@ -167,6 +200,9 @@ def load_and_process_data(
         raise ValueError("No valid prediction rows are available for scoring.")
 
     scored = scored.sort_values("date", kind="stable").reset_index(drop=True)
+    backtest_count = int((scored["phase"] == "Backtest").sum())
+    if not scored.iloc[:backtest_count]["phase"].eq("Backtest").all():
+        raise ValueError("Backtest rows must precede forward rows for the edge curve band.")
     scored[MARKET_COLUMNS] = np.vstack(
         [proportional_devig(row) for row in scored[MARKET_COLUMNS].to_numpy(dtype=float)]
     )
@@ -196,11 +232,6 @@ def load_and_process_data(
         .mean()
         .set_axis(rolling_columns, axis="columns")
     )
-    backtest_edges = scored.loc[scored["phase"] == "Backtest", "edge"].to_numpy(dtype=float)
-    backtest_std = float(np.std(backtest_edges, ddof=1)) if len(backtest_edges) > 1 else 0.0
-    cumulative_std = backtest_std * np.sqrt(np.arange(1, len(scored) + 1))
-    scored["upper_band"] = scored["cumulative_edge"] + (1.96 * cumulative_std)
-    scored["lower_band"] = scored["cumulative_edge"] - (1.96 * cumulative_std)
     return scored, len(data) - len(scored)
 
 
@@ -237,6 +268,8 @@ if dropped_rows:
 forward_matches = scored.loc[scored["phase"] == "Forward"]
 forward_edge = float(forward_matches["edge"].sum())
 backtest_count = int((scored["phase"] == "Backtest").sum())
+backtest_edges = scored.loc[scored["phase"] == "Backtest", "edge"].to_numpy(dtype=float)
+band_lower, band_upper = bootstrap_cumulative_band(backtest_edges)
 st.caption(f"Betty Core (v1) | Backtest: {backtest_count:,} matches | Forward: live scored matches | Market: de-vigged closing odds")
 
 metric_columns = st.columns(5)
@@ -264,13 +297,17 @@ with metric_columns[4]:
 
 with st.container(border=True):
     st.subheader("Edge curve")
-    st.caption("Cumulative market log loss minus Betty log loss; positive values favor Betty.")
+    st.caption(
+        "Cumulative market log loss minus Betty log loss; positive values favor Betty. "
+        "Band: pointwise 95% paired bootstrap of the backtest, assuming independent matches; "
+        "not shown for the forward test."
+    )
     edge_figure = go.Figure()
     edge_x = np.arange(1, len(scored) + 1)
     edge_figure.add_trace(
         go.Scatter(
-            x=edge_x,
-            y=scored["upper_band"],
+            x=edge_x[:backtest_count],
+            y=band_upper,
             mode="lines",
             line={"width": 0},
             showlegend=False,
@@ -279,13 +316,13 @@ with st.container(border=True):
     )
     edge_figure.add_trace(
         go.Scatter(
-            x=edge_x,
-            y=scored["lower_band"],
+            x=edge_x[:backtest_count],
+            y=band_lower,
             mode="lines",
             line={"width": 0},
             fill="tonexty",
             fillcolor="rgba(255, 255, 255, 0.05)",
-            name="95% band, approximate",
+            name="95% paired-bootstrap band",
             showlegend=True,
             hoverinfo="skip",
         )
