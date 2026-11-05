@@ -207,11 +207,6 @@ def load_and_process_data(
 st.set_page_config(page_title="Betty Terminal", layout="wide")
 st.title("Betty Terminal")
 st.caption("Match outcome analytics · read-only backtest export")
-st.caption(
-    "Model: Betty Core (v1), results-only Dixon-Coles. Backtest: 6,534 walk-forward matches. "
-    "Forward test: live matches scored after prediction. Market baseline: proportionally "
-    "de-vigged closing odds."
-)
 
 try:
     data_stat = DATA_PATH.stat()
@@ -242,6 +237,7 @@ if dropped_rows:
 forward_matches = scored.loc[scored["phase"] == "Forward"]
 forward_edge = float(forward_matches["edge"].sum())
 backtest_count = int((scored["phase"] == "Backtest").sum())
+st.caption(f"Betty Core (v1) | Backtest: {backtest_count:,} matches | Forward: live scored matches | Market: de-vigged closing odds")
 
 metric_columns = st.columns(5)
 with metric_columns[0]:
@@ -254,15 +250,15 @@ with metric_columns[3]:
     st.metric(
         "Cumulative edge",
         f"{scored['cumulative_edge'].iloc[-1]:+.2f}",
-        delta="positive means Betty outperforms the market",
+        help="Cumulative market log loss minus Betty log loss; positive means Betty outperforms the market.",
         border=True,
     )
 with metric_columns[4]:
     st.metric(
         "Forward Test Matches",
         f"{len(forward_matches):,}",
-        delta=f"{forward_edge:+.2f}",
-        delta_description="Forward Edge (market log loss − Betty log loss)",
+        delta=f"{forward_edge:+.2f} forward edge",
+        help="Forward edge is market log loss minus Betty log loss; positive favors Betty.",
         border=True,
     )
 
@@ -289,7 +285,8 @@ with st.container(border=True):
             line={"width": 0},
             fill="tonexty",
             fillcolor="rgba(255, 255, 255, 0.05)",
-            showlegend=False,
+            name="95% band, approximate",
+            showlegend=True,
             hoverinfo="skip",
         )
     )
@@ -301,6 +298,7 @@ with st.container(border=True):
             line={"color": ACCENT, "width": 2},
             fill="tozeroy",
             fillcolor="rgba(67, 217, 181, 0.10)",
+            name="Cumulative edge",
             hovertemplate="Match %{x}<br>Cumulative edge %{y:.3f}<extra></extra>",
         )
     )
@@ -350,7 +348,7 @@ with st.container(border=True):
 
 with st.container(border=True):
     st.subheader("Calibration")
-    st.caption("Home, draw, and away predictions are grouped into ten probability bins.")
+    st.caption("Home, draw, and away predictions are grouped into ten probability bins. Bins with fewer than 100 predictions are low sample.")
     outcomes = scored["actual_result"].to_numpy()
     calibration_data = pd.DataFrame(
         {
@@ -398,7 +396,7 @@ with st.container(border=True):
             },
             hovertemplate=(
                 "Mean predicted %{x:.1%}<br>Actual rate %{y:.1%}"
-                "<br>Predictions %{customdata[0]:,}<extra></extra>"
+                "<br>n=%{customdata[0]:,}<extra></extra>"
             ),
         )
     )
