@@ -271,6 +271,10 @@ backtest_count = int((scored["phase"] == "Backtest").sum())
 backtest_edges = scored.loc[scored["phase"] == "Backtest", "edge"].to_numpy(dtype=float)
 band_lower, band_upper = bootstrap_cumulative_band(backtest_edges)
 st.caption(f"Betty Core (v1) | Backtest: {backtest_count:,} matches | Forward: live scored matches | Market: de-vigged closing odds")
+if not forward_matches.empty:
+    latest_forward_date = forward_matches["date"].dropna().max()
+    if pd.notna(latest_forward_date):
+        st.caption(f"Data through {latest_forward_date:%Y-%m-%d}")
 
 metric_columns = st.columns(5)
 with metric_columns[0]:
