@@ -518,23 +518,27 @@ def load_and_process_data(
     scored[MARKET_COLUMNS] = np.vstack(
         [proportional_devig(row) for row in scored[MARKET_COLUMNS].to_numpy(dtype=float)]
     )
-    scored[PROBABILITY_COLUMNS] = np.vstack(
-        [row / row.sum() for row in scored[PROBABILITY_COLUMNS].to_numpy(dtype=float)]
+    betty_arr = scored[PROBABILITY_COLUMNS].to_numpy(dtype=float)
+    scored[PROBABILITY_COLUMNS] = betty_arr / betty_arr.sum(axis=1, keepdims=True)
+
+    actual_indices = scored["actual_result"].map(OUTCOME_INDEX).to_numpy(dtype=int)
+    rows_range = np.arange(len(scored))
+
+    betty_clipped = np.clip(
+        scored[PROBABILITY_COLUMNS].to_numpy(dtype=float),
+        LOG_LOSS_EPSILON,
+        1.0 - LOG_LOSS_EPSILON,
     )
-    scored["betty_log_loss"] = [
-        calculate_log_loss(probabilities, result)
-        for probabilities, result in zip(
-            scored[PROBABILITY_COLUMNS].to_numpy(dtype=float),
-            scored["actual_result"],
-        )
-    ]
-    scored["market_log_loss"] = [
-        calculate_log_loss(probabilities, result)
-        for probabilities, result in zip(
-            scored[MARKET_COLUMNS].to_numpy(dtype=float),
-            scored["actual_result"],
-        )
-    ]
+    betty_clipped = betty_clipped / betty_clipped.sum(axis=1, keepdims=True)
+    scored["betty_log_loss"] = -np.log(betty_clipped[rows_range, actual_indices])
+
+    market_clipped = np.clip(
+        scored[MARKET_COLUMNS].to_numpy(dtype=float),
+        LOG_LOSS_EPSILON,
+        1.0 - LOG_LOSS_EPSILON,
+    )
+    market_clipped = market_clipped / market_clipped.sum(axis=1, keepdims=True)
+    scored["market_log_loss"] = -np.log(market_clipped[rows_range, actual_indices])
     scored["edge"] = scored["market_log_loss"] - scored["betty_log_loss"]
     scored["cumulative_edge"] = scored["edge"].cumsum()
     rolling_columns = ["roll_home", "roll_draw", "roll_away"]
@@ -706,7 +710,7 @@ with st.container(border=True):
             })
 
     scoring_df = pd.DataFrame(scoring_rows)
-    st.dataframe(scoring_df, hide_index=True, use_container_width=True)
+    st.dataframe(scoring_df, hide_index=True, width="stretch")
 
 with st.container(border=True):
     st.subheader("Edge curve")
@@ -996,15 +1000,18 @@ with st.container(border=True):
                 line={"color": "#72808c", "dash": "dash"},
             )
         )
-        betty_symbols = ["circle" if count >= 100 else "circle-open" for count in betty_cal["n"]]
-        betty_array = [
-            (u - a) if count >= 100 else 0.0
-            for u, a, count in zip(betty_cal["upper"], betty_cal["actual_rate"], betty_cal["n"])
-        ]
-        betty_arrayminus = [
-            (a - l) if count >= 100 else 0.0
-            for l, a, count in zip(betty_cal["lower"], betty_cal["actual_rate"], betty_cal["n"])
-        ]
+        betty_mask = (betty_cal["n"] >= 100).to_numpy()
+        betty_symbols = np.where(betty_mask, "circle", "circle-open").tolist()
+        betty_array = np.where(
+            betty_mask,
+            betty_cal["upper"] - betty_cal["actual_rate"],
+            0.0,
+        ).tolist()
+        betty_arrayminus = np.where(
+            betty_mask,
+            betty_cal["actual_rate"] - betty_cal["lower"],
+            0.0,
+        ).tolist()
 
         calibration_figure.add_trace(
             go.Scatter(
@@ -1625,10 +1632,11 @@ with st.container(border=True):
             st.info("No matches match the selected strategy filters.", icon=":material/info:")
         else:
             clv_x = np.arange(1, len(filtered_sim) + 1)
-            clv_colors = [
-                "rgba(50, 255, 50, 0.85)" if v > 0 else "rgba(255, 50, 50, 0.85)"
-                for v in filtered_sim["clv_pct"]
-            ]
+            clv_colors = np.where(
+                filtered_sim["clv_pct"] > 0,
+                "rgba(50, 255, 50, 0.85)",
+                "rgba(255, 50, 50, 0.85)",
+            ).tolist()
             clv_figure = go.Figure(
                 go.Scatter(
                     x=clv_x,
