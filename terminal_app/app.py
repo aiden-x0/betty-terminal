@@ -169,6 +169,45 @@ def scoring_rule_edges(
     }
 
 
+@st.cache_data(show_spinner=False)
+def calibration_bins(predicted: np.ndarray, occurred: np.ndarray) -> pd.DataFrame:
+    pred = np.asarray(predicted, dtype=float)
+    occ = np.asarray(occurred, dtype=int)
+    if len(pred) == 0:
+        return pd.DataFrame(columns=["mean_predicted", "actual_rate", "n", "lower", "upper"])
+
+    data = pd.DataFrame({"predicted": pred, "occurred": occ})
+    data["probability_bin"] = pd.cut(
+        data["predicted"],
+        bins=np.linspace(0, 1, 11),
+        include_lowest=True,
+    )
+    agg = (
+        data.groupby("probability_bin", observed=True)
+        .agg(
+            mean_predicted=("predicted", "mean"),
+            actual_rate=("occurred", "mean"),
+            n=("occurred", "size"),
+        )
+        .reset_index(drop=True)
+    )
+    if agg.empty:
+        agg["lower"] = []
+        agg["upper"] = []
+        return agg
+
+    p = agg["actual_rate"].to_numpy(dtype=float)
+    n = agg["n"].to_numpy(dtype=float)
+    z = 1.96
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / denom
+    half = z * np.sqrt(np.maximum(0.0, p * (1.0 - p) / n + z2 / (4.0 * (n ** 2)))) / denom
+    agg["lower"] = center - half
+    agg["upper"] = center + half
+    return agg
+
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
     data_path: str,
@@ -534,97 +573,150 @@ with st.container(border=True):
 
 with st.container(border=True):
     st.subheader("Calibration")
-    st.caption("Home, draw, and away predictions are grouped into ten probability bins. Bins with fewer than 100 predictions are low sample.")
+    st.caption(
+        "Predicted probability bins of width 10 points. "
+        "Bars show 95% Wilson intervals for Betty's observed rate. "
+        "Hollow markers are bins with fewer than 100 predictions (low sample). "
+        "The market line uses the same bins on the same matches, but each bin holds different matches for Betty and for the market, so the comparison is indicative only."
+    )
+    selection = st.radio(
+        "Outcome",
+        ["All", "Home", "Draw", "Away"],
+        horizontal=True,
+        key="calibration_outcome",
+    )
     outcomes = scored["actual_result"].to_numpy()
-    calibration_data = pd.DataFrame(
-        {
-            "predicted_probability": scored[PROBABILITY_COLUMNS].to_numpy(dtype=float).ravel(),
-            "occurred": np.column_stack(
-                [outcomes == result for result in ("H", "D", "A")]
-            ).astype(int).ravel(),
+    if selection == "All":
+        betty_pred = scored[PROBABILITY_COLUMNS].to_numpy(dtype=float).ravel()
+        market_pred = scored[MARKET_COLUMNS].to_numpy(dtype=float).ravel()
+        occ = np.column_stack(
+            [outcomes == result for result in ("H", "D", "A")]
+        ).astype(int).ravel()
+    else:
+        col_map = {
+            "Home": ("p_home", "bookie_home", "H"),
+            "Draw": ("p_draw", "bookie_draw", "D"),
+            "Away": ("p_away", "bookie_away", "A"),
         }
-    )
-    calibration_data["probability_bin"] = pd.cut(
-        calibration_data["predicted_probability"],
-        bins=np.linspace(0, 1, 11),
-        include_lowest=True,
-    )
-    calibration = (
-        calibration_data.groupby("probability_bin", observed=True)
-        .agg(
-            mean_predicted=("predicted_probability", "mean"),
-            actual_rate=("occurred", "mean"),
-            predictions=("occurred", "size"),
+        b_col, m_col, res_code = col_map[selection]
+        betty_pred = scored[b_col].to_numpy(dtype=float)
+        market_pred = scored[m_col].to_numpy(dtype=float)
+        occ = (outcomes == res_code).astype(int)
+
+    betty_cal = calibration_bins(betty_pred, occ)
+    market_cal = calibration_bins(market_pred, occ)
+
+    if betty_cal.empty and market_cal.empty:
+        st.caption("No predictions in this selection.")
+    else:
+        calibration_figure = go.Figure()
+        calibration_figure.add_trace(
+            go.Scatter(
+                x=[0, 1],
+                y=[0, 1],
+                mode="lines",
+                name="Perfect calibration",
+                line={"color": "#72808c", "dash": "dash"},
+            )
         )
-        .reset_index(drop=True)
-    )
-    calibration_figure = go.Figure()
-    calibration_figure.add_trace(
-        go.Scatter(
-            x=[0, 1],
-            y=[0, 1],
-            mode="lines",
-            name="Perfect calibration",
-            line={"color": "#72808c", "dash": "dash"},
+        betty_symbols = ["circle" if count >= 100 else "circle-open" for count in betty_cal["n"]]
+        betty_array = [
+            (u - a) if count >= 100 else 0.0
+            for u, a, count in zip(betty_cal["upper"], betty_cal["actual_rate"], betty_cal["n"])
+        ]
+        betty_arrayminus = [
+            (a - l) if count >= 100 else 0.0
+            for l, a, count in zip(betty_cal["lower"], betty_cal["actual_rate"], betty_cal["n"])
+        ]
+
+        calibration_figure.add_trace(
+            go.Scatter(
+                x=betty_cal["mean_predicted"],
+                y=betty_cal["actual_rate"],
+                mode="lines+markers",
+                name="Betty",
+                line={"color": ACCENT, "width": 2},
+                error_y={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": betty_array,
+                    "arrayminus": betty_arrayminus,
+                    "thickness": 1,
+                    "color": ACCENT,
+                },
+                customdata=betty_cal[["n"]],
+                marker={
+                    "color": ACCENT,
+                    "size": 8,
+                    "symbol": betty_symbols,
+                },
+                hovertemplate=(
+                    "Betty<br>Mean predicted %{x:.1%}<br>Actual rate %{y:.1%}"
+                    "<br>n=%{customdata[0]:,}<extra></extra>"
+                ),
+            )
         )
-    )
-    calibration_figure.add_trace(
-        go.Scatter(
-            x=calibration["mean_predicted"],
-            y=calibration["actual_rate"],
-            mode="lines+markers",
-            name="Betty",
-            line={"color": ACCENT, "width": 2},
-            customdata=calibration[["predictions"]],
-            marker={
-                "color": ACCENT,
-                "size": 8,
+
+        market_symbols = ["circle" if count >= 100 else "circle-open" for count in market_cal["n"]]
+        calibration_figure.add_trace(
+            go.Scatter(
+                x=market_cal["mean_predicted"],
+                y=market_cal["actual_rate"],
+                mode="lines+markers",
+                name="Market",
+                line={"color": "#f0b858", "dash": "dot", "width": 2},
+                customdata=market_cal[["n"]],
+                marker={
+                    "color": "#f0b858",
+                    "size": 8,
+                    "symbol": market_symbols,
+                },
+                hovertemplate=(
+                    "Market<br>Mean predicted %{x:.1%}<br>Actual rate %{y:.1%}"
+                    "<br>n=%{customdata[0]:,}<extra></extra>"
+                ),
+            )
+        )
+
+        calibration_figure.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Mean predicted probability",
+            yaxis_title="Observed win rate",
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "range": [0, 1],
+                "tickformat": ".0%",
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
             },
-            hovertemplate=(
-                "Mean predicted %{x:.1%}<br>Actual rate %{y:.1%}"
-                "<br>n=%{customdata[0]:,}<extra></extra>"
-            ),
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "range": [0, 1],
+                "tickformat": ".0%",
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            legend={"orientation": "h", "y": 1.12, "x": 1, "xanchor": "right"},
         )
-    )
-    calibration_figure.update_layout(
-        template="plotly_dark",
-        paper_bgcolor=PLOT_BACKGROUND,
-        plot_bgcolor=PLOT_BACKGROUND,
-        font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
-        hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
-        margin={"l": 12, "r": 12, "t": 24, "b": 12},
-        xaxis_title="Mean predicted probability",
-        yaxis_title="Observed win rate",
-        xaxis={
-            "gridcolor": PLOT_GRID,
-            "range": [0, 1],
-            "tickformat": ".0%",
-            "showspikes": True,
-            "spikemode": "across",
-            "spikesnap": "cursor",
-            "spikethickness": 1,
-            "spikedash": "dot",
-            "spikecolor": "rgba(255, 255, 255, 0.3)",
-        },
-        yaxis={
-            "gridcolor": PLOT_GRID,
-            "range": [0, 1],
-            "tickformat": ".0%",
-            "showspikes": True,
-            "spikemode": "across",
-            "spikesnap": "cursor",
-            "spikethickness": 1,
-            "spikedash": "dot",
-            "spikecolor": "rgba(255, 255, 255, 0.3)",
-        },
-        legend={"orientation": "h", "y": 1.12, "x": 1, "xanchor": "right"},
-    )
-    st.plotly_chart(
-        calibration_figure,
-        width="stretch",
-        config={"displayModeBar": False},
-        alt="Betty's observed outcome rates by predicted-probability bin compared with perfect calibration.",
-    )
+        st.plotly_chart(
+            calibration_figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt=f"Betty and market observed outcome rates by predicted-probability bin for {selection.lower()} outcomes compared with perfect calibration.",
+        )
 
 with st.container(border=True):
     st.subheader("League performance")
