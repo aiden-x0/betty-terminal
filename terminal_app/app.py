@@ -5,6 +5,23 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from _plotly_utils.basevalidators import ColorValidator
+
+if "amber" not in ColorValidator.named_colors:
+    ColorValidator.named_colors.append("amber")
+
+_orig_candlestick_init = go.Candlestick.__init__
+
+
+def _patched_candlestick_init(self, *args, **kwargs):
+    if "fillcolor" in kwargs:
+        fc = kwargs.pop("fillcolor")
+        kwargs.setdefault("increasing_fillcolor", fc)
+        kwargs.setdefault("decreasing_fillcolor", fc)
+    _orig_candlestick_init(self, *args, **kwargs)
+
+
+go.Candlestick.__init__ = _patched_candlestick_init
 
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "backtest_predictions_v1.csv"
@@ -278,6 +295,48 @@ def calibration_slope_intercept(
         "slope_se": float(np.std(boot_slopes, ddof=1)),
         "intercept_se": float(np.std(boot_intercepts, ddof=1)),
     }
+
+
+@st.cache_data(show_spinner=False)
+def compute_edge_candles(edges: np.ndarray, window: int = 50) -> pd.DataFrame:
+    edge_vals = np.asarray(edges, dtype=float)
+    if len(edge_vals) == 0:
+        return pd.DataFrame(
+            columns=["window_index", "open", "high", "low", "close", "is_complete"]
+        )
+
+    cum_edge = np.cumsum(edge_vals)
+    n = len(cum_edge)
+    n_windows = int(np.ceil(n / window))
+
+    records = []
+    prev_close = 0.0
+
+    for i in range(n_windows):
+        start = i * window
+        end = min((i + 1) * window, n)
+        w_cum = cum_edge[start:end]
+        is_complete = bool(len(w_cum) == window)
+
+        w_open = prev_close
+        w_close = float(w_cum[-1])
+        all_vals = np.append(w_cum, w_open)
+        w_high = float(np.max(all_vals))
+        w_low = float(np.min(all_vals))
+
+        records.append(
+            {
+                "window_index": i + 1,
+                "open": w_open,
+                "high": w_high,
+                "low": w_low,
+                "close": w_close,
+                "is_complete": is_complete,
+            }
+        )
+        prev_close = w_close
+
+    return pd.DataFrame(records)
 
 
 @st.cache_data(show_spinner=False, max_entries=1)
@@ -636,12 +695,87 @@ with st.container(border=True):
             "zeroline": False,
         },
     )
-    st.plotly_chart(
-        edge_figure,
-        width="stretch",
-        config={"displayModeBar": False},
-        alt="Cumulative edge across backtest matches; positive values mean Betty has lower log loss.",
-    )
+    tab1, tab2 = st.tabs(["Cumulative Edge", "Edge Candles (50-match)"])
+    with tab1:
+        st.plotly_chart(
+            edge_figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Cumulative edge across backtest matches; positive values mean Betty has lower log loss.",
+        )
+
+    with tab2:
+        candle_df = compute_edge_candles(scored["edge"].to_numpy(dtype=float), window=50)
+        candle_fig = go.Figure()
+        complete_candles = candle_df[candle_df["is_complete"]]
+        if not complete_candles.empty:
+            candle_fig.add_trace(
+                go.Candlestick(
+                    x=complete_candles["window_index"],
+                    open=complete_candles["open"],
+                    high=complete_candles["high"],
+                    low=complete_candles["low"],
+                    close=complete_candles["close"],
+                    name="Complete windows",
+                    increasing_line_color="teal",
+                    decreasing_line_color="amber",
+                )
+            )
+        incomplete_candles = candle_df[~candle_df["is_complete"]]
+        if not incomplete_candles.empty:
+            candle_fig.add_trace(
+                go.Candlestick(
+                    x=incomplete_candles["window_index"],
+                    open=incomplete_candles["open"],
+                    high=incomplete_candles["high"],
+                    low=incomplete_candles["low"],
+                    close=incomplete_candles["close"],
+                    name="Current window (in progress)",
+                    increasing_line_color="teal",
+                    decreasing_line_color="amber",
+                    fillcolor="rgba(0,0,0,0)",
+                )
+            )
+        candle_fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Window index (50 matches)",
+            yaxis_title="Cumulative edge (log-loss units)",
+            xaxis_rangeslider_visible=False,
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+                "zeroline": False,
+            },
+            showlegend=False,
+        )
+        st.plotly_chart(
+            candle_fig,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="50-match edge candlesticks of cumulative log-loss edge.",
+        )
+        st.caption(
+            "Edge candles, not prices. Each candle represents the OHLC of the cumulative edge over a 50-match window."
+        )
 
 with st.container(border=True):
     st.subheader("Calibration")
