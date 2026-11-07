@@ -362,6 +362,77 @@ def compute_rolling_edge(edges: np.ndarray, window: int = 100) -> pd.DataFrame:
     return df.dropna().reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def prepare_betty_picks(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Betty top pick, devigged closing odds, Kelly fractions, and actual outcome odds bracket."""
+    res = df.copy()
+    betty_probs = res[PROBABILITY_COLUMNS].to_numpy(dtype=float)
+    market_probs = res[MARKET_COLUMNS].to_numpy(dtype=float)
+    top_pick_indices = np.argmax(betty_probs, axis=1)
+    actual_indices = res["actual_result"].map(OUTCOME_INDEX).to_numpy(dtype=int)
+
+    outcome_labels = np.array(["H", "D", "A"])
+    res["betty_top_pick"] = outcome_labels[top_pick_indices]
+    betty_prob = betty_probs[np.arange(len(res)), top_pick_indices]
+    res["betty_prob"] = betty_prob
+    market_odds = 1.0 / market_probs[np.arange(len(res)), top_pick_indices]
+    res["top_market_odds"] = market_odds
+    res["pick_won"] = (top_pick_indices == actual_indices)
+
+    full_kelly = np.where(
+        market_odds > 1.0,
+        ((betty_prob * market_odds) - 1.0) / (market_odds - 1.0),
+        0.0,
+    )
+    res["full_kelly"] = full_kelly
+    res["quarter_kelly"] = np.where(full_kelly > 0.0, full_kelly * 0.25, 0.0)
+
+    actual_outcome_prob = market_probs[np.arange(len(res)), actual_indices]
+    res["market_odds"] = 1.0 / actual_outcome_prob
+    res["odds_bracket"] = pd.cut(
+        res["market_odds"],
+        bins=[1.0, 1.5, 2.0, 3.0, 100.0],
+        labels=["< 1.5 (Heavy Fav)", "1.5-2.0 (Fav)", "2.0-3.0 (Dog)", "> 3.0 (Longshot)"],
+        include_lowest=True,
+    )
+    return res
+
+
+@st.cache_data(show_spinner=False)
+def simulate_bankroll_and_drawdown(
+    filtered_df: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute Quarter Kelly bankroll, flat bankroll, and drawdown curve for filtered matches."""
+    if filtered_df.empty:
+        return np.array([]), np.array([]), np.array([])
+
+    cum_edge = filtered_df["edge"].cumsum()
+    drawdown = (cum_edge - cum_edge.cummax()).to_numpy(dtype=float)
+
+    qk_bankroll = []
+    flat_bankroll = []
+    current_qk = 100.0
+    current_flat = 100.0
+
+    for has_edge, qk_frac, odds, won in zip(
+        filtered_df["quarter_kelly"] > 0,
+        filtered_df["quarter_kelly"],
+        filtered_df["top_market_odds"],
+        filtered_df["pick_won"],
+    ):
+        if has_edge:
+            if won:
+                current_qk += current_qk * qk_frac * (odds - 1.0)
+                current_flat += (odds - 1.0)
+            else:
+                current_qk -= current_qk * qk_frac
+                current_flat -= 1.0
+        qk_bankroll.append(current_qk)
+        flat_bankroll.append(current_flat)
+
+    return np.array(qk_bankroll), np.array(flat_bankroll), drawdown
+
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
     data_path: str,
@@ -1272,3 +1343,348 @@ st.caption(
     "Market values in this export are already proportional-devigged probabilities. "
     "Decimal odds are converted to implied probabilities if supplied in their place."
 )
+
+st.divider()
+st.header("Experimental: hypothetical backtest simulations (in-sample)")
+st.warning(
+    "Hypothetical, in-sample. Filters were chosen by looking at this same backtest. "
+    "Returns use devigged closing odds with no bookmaker margin, so real results would be worse. "
+    "Not evidence of an edge; judge only on forward results."
+)
+
+sim_base = prepare_betty_picks(scored)
+
+filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 2])
+with filter_col1:
+    min_kelly = st.slider(
+        "Min Kelly Fraction (Edge)",
+        min_value=0.0,
+        max_value=0.10,
+        value=0.0,
+        step=0.005,
+        key="exp_min_kelly",
+    )
+with filter_col2:
+    max_odds = st.number_input(
+        "Max Odds Cap",
+        value=10.0,
+        min_value=1.0,
+        step=0.5,
+        key="exp_max_odds",
+    )
+with filter_col3:
+    all_leagues = sorted(sim_base["league"].dropna().unique().tolist())
+    selected_leagues = st.multiselect(
+        "Leagues",
+        options=all_leagues,
+        default=all_leagues,
+        key="exp_leagues",
+    )
+
+sim_mask = (
+    sim_base["league"].isin(selected_leagues)
+    & (sim_base["top_market_odds"] <= max_odds)
+    & (sim_base["full_kelly"] >= min_kelly)
+)
+filtered_sim = sim_base.loc[sim_mask].copy().reset_index(drop=True)
+
+st.caption(
+    f"Filtered match count: **n = {len(filtered_sim):,}** "
+    f"({len(filtered_sim) / len(sim_base):.1%} of total {len(sim_base):,} matches)"
+)
+
+qk_series, flat_series, drawdown_series = simulate_bankroll_and_drawdown(filtered_sim)
+sim_backtest_count = int((filtered_sim["phase"] == "Backtest").sum()) if not filtered_sim.empty else 0
+sim_forward_count = len(filtered_sim) - sim_backtest_count
+
+with st.container(border=True):
+    st.subheader("Recovery Tracker (Drawdown Curve)")
+    st.caption(
+        "Cumulative edge relative to its historical peak; values are zero at all-time highs "
+        "and negative during drawdowns."
+    )
+    if filtered_sim.empty:
+        st.info("No matches match the selected strategy filters.", icon=":material/info:")
+    else:
+        drawdown_figure = go.Figure()
+        drawdown_x = np.arange(1, len(filtered_sim) + 1)
+        drawdown_figure.add_trace(
+            go.Scatter(
+                x=drawdown_x,
+                y=drawdown_series,
+                mode="lines",
+                fill="tozeroy",
+                fillcolor="rgba(255, 50, 50, 0.2)",
+                line_color="rgba(255, 50, 50, 0.8)",
+                name="Drawdown",
+                hovertemplate="Match %{x}<br>Drawdown %{y:.3f}<extra></extra>",
+            )
+        )
+        drawdown_figure.add_hline(y=0, line_color="#72808c", line_dash="dot")
+        if sim_backtest_count > 0 and sim_forward_count > 0:
+            drawdown_figure.add_vline(
+                x=sim_backtest_count + 0.5,
+                line_color="#f0b858",
+                line_dash="dash",
+                annotation_text="Forward Test Started",
+                annotation_position="top",
+            )
+        max_drawdown = float(drawdown_series.min()) if len(drawdown_series) > 0 else 0.0
+        drawdown_figure.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Match index",
+            yaxis_title="Drawdown (log-loss units)",
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+                "zeroline": False,
+                "range": [max_drawdown * 1.05 if max_drawdown < 0 else -1.0, 0],
+                "maxallowed": 0,
+            },
+        )
+        st.plotly_chart(
+            drawdown_figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Drawdown curve of cumulative edge from all-time peak; values are zero or negative.",
+        )
+
+with st.container(border=True):
+    st.subheader("Performance Matrix (Mean Edge by League & Odds)")
+    st.caption(
+        "Bivariate heatmap of mean edge per match (market log loss minus Betty log loss) "
+        "across leagues and devigged market odds brackets of the actual match outcome."
+    )
+    if filtered_sim.empty:
+        st.info("No matches match the selected strategy filters.", icon=":material/info:")
+    else:
+        performance_matrix = (
+            filtered_sim.groupby(["league", "odds_bracket"], observed=False)["edge"]
+            .mean()
+            .unstack("odds_bracket")
+        )
+        matrix_figure = go.Figure(
+            go.Heatmap(
+                z=performance_matrix.values,
+                x=list(performance_matrix.columns),
+                y=list(performance_matrix.index),
+                colorscale=[
+                    [0, "rgba(255, 50, 50, 0.8)"],
+                    [0.5, "rgba(14, 17, 23, 1)"],
+                    [1, "rgba(50, 255, 50, 0.8)"],
+                ],
+                zmid=0,
+                colorbar={"title": "Mean edge"},
+                hovertemplate=(
+                    "League: %{y}<br>"
+                    "Odds: %{x}<br>"
+                    "Mean edge: %{z:+.4f}<extra></extra>"
+                ),
+            )
+        )
+        matrix_figure.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Odds bracket",
+            yaxis_title="League",
+            xaxis={"gridcolor": PLOT_GRID},
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "autorange": "reversed",
+                "tickmode": "array",
+                "tickvals": list(performance_matrix.index),
+                "ticktext": [
+                    f"{LEAGUE_NAMES.get(code, code)} ({code})"
+                    for code in performance_matrix.index
+                ],
+            },
+        )
+        st.plotly_chart(
+            matrix_figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Performance matrix heatmap showing mean edge by league and odds bracket.",
+        )
+
+with st.container(border=True):
+    st.subheader("Bankroll Simulation (Quarter Kelly vs. 1-Unit Flat Staking)")
+    st.caption(
+        "Simulated 100-unit starting bankroll betting on Betty's highest-probability outcome "
+        "when Betty has a positive edge against devigged closing odds. "
+        "Quarter Kelly compounds stake sizing by edge, while 1-Unit Flat Staking wagers a constant 1 unit."
+    )
+    if filtered_sim.empty:
+        st.info("No matches match the selected strategy filters.", icon=":material/info:")
+    else:
+        bankroll_figure = go.Figure()
+        bankroll_x = np.arange(1, len(filtered_sim) + 1)
+        bankroll_figure.add_trace(
+            go.Scatter(
+                x=bankroll_x,
+                y=qk_series,
+                mode="lines",
+                line={"color": ACCENT, "width": 2},
+                name="Quarter Kelly Bankroll",
+                hovertemplate="Match %{x}<br>Quarter Kelly: %{y:.2f} units<extra></extra>",
+            )
+        )
+        bankroll_figure.add_trace(
+            go.Scatter(
+                x=bankroll_x,
+                y=flat_series,
+                mode="lines",
+                line={"color": "#72808c", "width": 1.5},
+                name="Flat Staking Bankroll",
+                hovertemplate="Match %{x}<br>Flat Staking: %{y:.2f} units<extra></extra>",
+            )
+        )
+        bankroll_figure.add_hline(y=100, line_color="#72808c", line_dash="dot")
+        if sim_backtest_count > 0 and sim_forward_count > 0:
+            bankroll_figure.add_vline(
+                x=sim_backtest_count + 0.5,
+                line_color="#f0b858",
+                line_dash="dash",
+                annotation_text="Forward Test Started",
+                annotation_position="top",
+            )
+        max_bankroll = max(
+            float(qk_series.max()) if len(qk_series) > 0 else 100.0,
+            float(flat_series.max()) if len(flat_series) > 0 else 100.0,
+            100.0,
+        )
+        bankroll_figure.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Match index",
+            yaxis_title="Bankroll (units)",
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "range": [0, max_bankroll * 1.05],
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            legend={"orientation": "h", "y": 1.12, "x": 1, "xanchor": "right"},
+        )
+        st.plotly_chart(
+            bankroll_figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Bankroll simulation comparing Quarter Kelly compounding vs 1-unit flat staking.",
+        )
+
+with st.container(border=True):
+    st.subheader("Closing Line Value (CLV) Tracking")
+    if "top_open_odds" not in filtered_sim.columns:
+        st.info("CLV Tracking offline: Awaiting 'top_open_odds' from the backend data pipeline.")
+    else:
+        st.caption(
+            "Closing Line Value (CLV) relative to opening odds for Betty's top pick. "
+            "Positive values indicate market odds shortened toward Betty's prediction."
+        )
+        if filtered_sim.empty:
+            st.info("No matches match the selected strategy filters.", icon=":material/info:")
+        else:
+            clv_x = np.arange(1, len(filtered_sim) + 1)
+            clv_colors = [
+                "rgba(50, 255, 50, 0.85)" if v > 0 else "rgba(255, 50, 50, 0.85)"
+                for v in filtered_sim["clv_pct"]
+            ]
+            clv_figure = go.Figure(
+                go.Scatter(
+                    x=clv_x,
+                    y=filtered_sim["clv_pct"],
+                    mode="markers",
+                    marker={"color": clv_colors, "size": 6, "opacity": 0.8},
+                    name="CLV",
+                    hovertemplate="Match %{x}<br>CLV: %{y:+.2%}<extra></extra>",
+                )
+            )
+            clv_figure.add_hline(
+                y=0,
+                line_color="#72808c",
+                line_dash="dash",
+                line_width=2,
+            )
+            if sim_backtest_count > 0 and sim_forward_count > 0:
+                clv_figure.add_vline(
+                    x=sim_backtest_count + 0.5,
+                    line_color="#f0b858",
+                    line_dash="dash",
+                    annotation_text="Forward Test Started",
+                    annotation_position="top",
+                )
+            clv_figure.update_layout(
+                template="plotly_dark",
+                paper_bgcolor=PLOT_BACKGROUND,
+                plot_bgcolor=PLOT_BACKGROUND,
+                font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+                hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+                margin={"l": 12, "r": 12, "t": 24, "b": 12},
+                xaxis_title="Match index",
+                yaxis_title="Closing Line Value",
+                xaxis={
+                    "gridcolor": PLOT_GRID,
+                    "showspikes": True,
+                    "spikemode": "across",
+                    "spikesnap": "cursor",
+                    "spikethickness": 1,
+                    "spikedash": "dot",
+                    "spikecolor": "rgba(255, 255, 255, 0.3)",
+                },
+                yaxis={
+                    "gridcolor": PLOT_GRID,
+                    "tickformat": ".1%",
+                    "showspikes": True,
+                    "spikemode": "across",
+                    "spikesnap": "cursor",
+                    "spikethickness": 1,
+                    "spikedash": "dot",
+                    "spikecolor": "rgba(255, 255, 255, 0.3)",
+                },
+            )
+            st.plotly_chart(
+                clv_figure,
+                width="stretch",
+                config={"displayModeBar": False},
+                alt="Closing Line Value scatter plot showing price movement toward or away from Betty's predictions.",
+            )
