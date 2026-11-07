@@ -339,6 +339,29 @@ def compute_edge_candles(edges: np.ndarray, window: int = 50) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+@st.cache_data(show_spinner=False)
+def compute_rolling_edge(edges: np.ndarray, window: int = 100) -> pd.DataFrame:
+    series = pd.Series(np.asarray(edges, dtype=float))
+    if len(series) < window:
+        return pd.DataFrame(
+            columns=["match_index", "rolling_edge", "lower_band", "upper_band"]
+        )
+
+    rolling_mean = series.rolling(window).mean()
+    rolling_std = series.rolling(window).std()
+    margin = 1.96 * (rolling_std / np.sqrt(window))
+
+    df = pd.DataFrame(
+        {
+            "match_index": np.arange(1, len(series) + 1),
+            "rolling_edge": rolling_mean,
+            "lower_band": rolling_mean - margin,
+            "upper_band": rolling_mean + margin,
+        }
+    )
+    return df.dropna().reset_index(drop=True)
+
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
     data_path: str,
@@ -695,7 +718,7 @@ with st.container(border=True):
             "zeroline": False,
         },
     )
-    tab1, tab2 = st.tabs(["Cumulative Edge", "Edge Candles (50-match)"])
+    tab1, tab2, tab3 = st.tabs(["Cumulative Edge", "Edge Candles (50-match)", "Rolling Edge (100-match)"])
     with tab1:
         st.plotly_chart(
             edge_figure,
@@ -775,6 +798,83 @@ with st.container(border=True):
         )
         st.caption(
             "Edge candles, not prices. Each candle represents the OHLC of the cumulative edge over a 50-match window."
+        )
+
+    with tab3:
+        rolling_df = compute_rolling_edge(scored["edge"].to_numpy(dtype=float), window=100)
+        rolling_fig = go.Figure()
+        rolling_fig.add_trace(
+            go.Scatter(
+                x=rolling_df["match_index"],
+                y=rolling_df["lower_band"],
+                mode="lines",
+                line_color="rgba(255,255,255,0)",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        rolling_fig.add_trace(
+            go.Scatter(
+                x=rolling_df["match_index"],
+                y=rolling_df["upper_band"],
+                mode="lines",
+                line_color="rgba(255,255,255,0)",
+                fill="tonexty",
+                fillcolor="rgba(255, 255, 255, 0.1)",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        rolling_fig.add_trace(
+            go.Scatter(
+                x=rolling_df["match_index"],
+                y=rolling_df["rolling_edge"],
+                mode="lines",
+                line_color="#dce5ec",
+                name="Rolling Edge",
+                hovertemplate="Match %{x}<br>Rolling edge %{y:.4f}<extra></extra>",
+            )
+        )
+        rolling_fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        rolling_fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Match index",
+            yaxis_title="Rolling edge (log-loss units)",
+            xaxis_rangeslider_visible=False,
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+            },
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+                "zeroline": False,
+            },
+        )
+        st.plotly_chart(
+            rolling_fig,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Rolling 100-match average edge with 95% confidence bands.",
+        )
+        st.caption(
+            "Rolling 100-match average edge (Betty log loss vs Market log loss) with 95% confidence bands. "
+            "Positive values indicate Betty outperformed the market."
         )
 
 with st.container(border=True):
