@@ -933,6 +933,91 @@ with st.container(border=True):
         )
 
 with st.container(border=True):
+    st.subheader("Open-to-Close Market Movement")
+    opening_cols = ["opening_avg_h", "opening_avg_d", "opening_avg_a"]
+    has_opening = (
+        all(c in scored.columns for c in opening_cols)
+        and scored[opening_cols].notna().all(axis=1)
+    )
+    if isinstance(has_opening, pd.Series) and has_opening.any():
+        opening_data = scored.loc[has_opening]
+        open_odds = opening_data[opening_cols].to_numpy(dtype=float)
+        open_probs = np.array([proportional_devig(row) for row in open_odds])
+        open_home = open_probs[:, 0]
+        close_home = opening_data["bookie_home"].to_numpy(dtype=float)
+
+        movement_fig = go.Figure()
+        movement_fig.add_trace(
+            go.Scatter(
+                x=[0, 1],
+                y=[0, 1],
+                mode="lines",
+                line=dict(dash="dash", color="gray"),
+                name="No movement (y = x)",
+                hoverinfo="skip",
+            )
+        )
+        movement_fig.add_trace(
+            go.Scattergl(
+                x=open_home,
+                y=close_home,
+                mode="markers",
+                marker=dict(opacity=0.3, size=4, color="teal"),
+                name="Home probability",
+                hovertemplate="Opening: %{x:.1%}<br>Closing: %{y:.1%}<extra></extra>",
+            )
+        )
+        movement_fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=PLOT_BACKGROUND,
+            plot_bgcolor=PLOT_BACKGROUND,
+            font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
+            hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
+            margin={"l": 12, "r": 12, "t": 24, "b": 12},
+            xaxis_title="Opening Market Probability",
+            yaxis_title="Closing Market Probability",
+            xaxis_rangeslider_visible=False,
+            xaxis={
+                "gridcolor": PLOT_GRID,
+                "range": [0, 1],
+                "tickformat": ".0%",
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+                "zeroline": False,
+            },
+            yaxis={
+                "gridcolor": PLOT_GRID,
+                "range": [0, 1],
+                "tickformat": ".0%",
+                "showspikes": True,
+                "spikemode": "across",
+                "spikesnap": "cursor",
+                "spikethickness": 1,
+                "spikedash": "dot",
+                "spikecolor": "rgba(255, 255, 255, 0.3)",
+                "zeroline": False,
+            },
+            showlegend=False,
+        )
+        st.plotly_chart(
+            movement_fig,
+            width="stretch",
+            config={"displayModeBar": False},
+            alt="Scatter plot of devigged market opening vs closing probabilities for home teams.",
+        )
+    else:
+        st.caption("No opening odds available.")
+    st.caption(
+        "Scatter plot of devigged market opening vs closing probabilities. "
+        "Points above the dashed line indicate the market steamed in (probability increased); "
+        "points below indicate drift."
+    )
+
+with st.container(border=True):
     st.subheader("League performance")
     st.caption(
         "Edge per match = market log loss minus Betty log loss; positive favors Betty. "
