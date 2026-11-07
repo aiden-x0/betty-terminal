@@ -120,6 +120,24 @@ def bootstrap_cumulative_band(
     upper = np.interp(positions, checkpoints, upper_checkpoints, left=np.nan)
     return lower, upper
 
+@st.cache_data(show_spinner=False)
+def bootstrap_mean_interval(
+    edges: np.ndarray, n_boot: int = 10000, seed: int = 0
+) -> tuple[float, float]:
+    numbers = np.asarray(edges, dtype=float)
+    if len(numbers) < 10:
+        return float("nan"), float("nan")
+
+    rng = np.random.default_rng(seed)
+    boot_means = []
+    n = len(numbers)
+    for start in range(0, n_boot, 500):
+        batch = min(500, n_boot - start)
+        indices = rng.integers(0, n, size=(batch, n))
+        boot_means.extend(numbers[indices].mean(axis=1))
+    lower, upper = np.percentile(boot_means, [2.5, 97.5])
+    return float(lower), float(upper)
+
 
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
@@ -298,6 +316,45 @@ with metric_columns[4]:
         help="Forward edge is market log loss minus Betty log loss; positive favors Betty.",
         border=True,
     )
+
+forward_edges = forward_matches["edge"].to_numpy(dtype=float)
+forward_n = len(forward_edges)
+if forward_n >= 10:
+    mean_edge = float(forward_edges.mean())
+    lower, upper = bootstrap_mean_interval(forward_edges)
+
+with st.container(border=True):
+    st.subheader("Forward test progress")
+    st.progress(
+        min(forward_n / 300, 1.0),
+        text=f"{forward_n:,} of 300 forward matches (first review). Second review at 1,000.",
+    )
+    if forward_n >= 10:
+        st.caption(
+            f"Forward edge per match: {mean_edge:+.4f} "
+            f"(95% paired-bootstrap interval {lower:+.4f} to {upper:+.4f}, n={forward_n:,})"
+        )
+        if lower > 0:
+            st.caption("Interval entirely above zero.")
+        elif upper < 0:
+            st.caption("Interval entirely below zero.")
+        else:
+            st.caption("Interval includes zero: inconclusive, not evidence for or against an edge.")
+    else:
+        st.caption("Too few forward matches for an interval.")
+    with st.expander("Method and pre-registered rule"):
+        st.markdown(
+            "1. Frozen until the first review: model (Betty Core v1), benchmark "
+            "(proportional devig of the Football-Data average closing odds, AvgC; Shin is not used yet) "
+            "and filters (none; all matches).\n"
+            "2. Edge = market log loss minus Betty log loss per match; positive favours Betty.\n"
+            "3. Review at 300 forward matches: an interval entirely above zero counts as evidence of an edge. "
+            "Anything else is inconclusive, not proof of no edge. If inconclusive, collection continues to a second review at 1,000 matches.\n"
+            "4. Sensitivity: with the backtest spread of about 0.17 log loss per match, 300 matches can reliably detect only a true edge of about +0.028 per match or more, and 1,000 matches about +0.015. Smaller edges will usually look inconclusive.\n"
+            "5. Backtest reference: Betty trails the market by about 0.022 log loss per match over 6,534 matches, with a 95% interval of about -0.026 to -0.018.\n"
+            "6. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
+            "7. This is a statistical research display, not betting advice."
+        )
 
 with st.container(border=True):
     st.subheader("Edge curve")
