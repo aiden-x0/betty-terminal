@@ -170,11 +170,16 @@ def scoring_rule_edges(
 
 
 @st.cache_data(show_spinner=False)
-def calibration_bins(predicted: np.ndarray, occurred: np.ndarray) -> pd.DataFrame:
+def calibration_bins(
+    predicted: np.ndarray, occurred: np.ndarray
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     pred = np.asarray(predicted, dtype=float)
     occ = np.asarray(occurred, dtype=int)
     if len(pred) == 0:
-        return pd.DataFrame(columns=["mean_predicted", "actual_rate", "n", "lower", "upper"])
+        return (
+            pd.DataFrame(columns=["mean_predicted", "actual_rate", "n", "lower", "upper"]),
+            pd.DataFrame(columns=["predicted", "occurred"]),
+        )
 
     data = pd.DataFrame({"predicted": pred, "occurred": occ})
     data["probability_bin"] = pd.cut(
@@ -194,7 +199,7 @@ def calibration_bins(predicted: np.ndarray, occurred: np.ndarray) -> pd.DataFram
     if agg.empty:
         agg["lower"] = []
         agg["upper"] = []
-        return agg
+        return agg, data
 
     p = agg["actual_rate"].to_numpy(dtype=float)
     n = agg["n"].to_numpy(dtype=float)
@@ -205,7 +210,74 @@ def calibration_bins(predicted: np.ndarray, occurred: np.ndarray) -> pd.DataFram
     half = z * np.sqrt(np.maximum(0.0, p * (1.0 - p) / n + z2 / (4.0 * (n ** 2)))) / denom
     agg["lower"] = center - half
     agg["upper"] = center + half
-    return agg
+    return agg, data
+
+
+@st.cache_data(show_spinner=False)
+def calibration_slope_intercept(
+    predicted: np.ndarray,
+    observed: np.ndarray,
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> dict[str, float | tuple[float, float]]:
+    pred = np.asarray(predicted, dtype=float)
+    obs = np.asarray(observed, dtype=float)
+    if len(pred) == 0:
+        return {
+            "slope": 0.0,
+            "intercept": 0.0,
+            "slope_ci": (0.0, 0.0),
+            "intercept_ci": (0.0, 0.0),
+            "slope_se": 0.0,
+            "intercept_se": 0.0,
+        }
+
+    x = pred
+    y = obs
+    n = len(x)
+    x_mean = x.mean()
+    y_mean = y.mean()
+    x_dev = x - x_mean
+    var_x = np.dot(x_dev, x_dev)
+    if var_x == 0.0:
+        slope = 0.0
+        intercept = float(y_mean)
+    else:
+        slope = float(np.dot(x_dev, y - y_mean) / var_x)
+        intercept = float(y_mean - slope * x_mean)
+
+    rng = np.random.default_rng(seed)
+    boot_slopes = np.empty(n_boot, dtype=float)
+    boot_intercepts = np.empty(n_boot, dtype=float)
+
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        xi = x[idx]
+        yi = y[idx]
+        xi_mean = xi.mean()
+        yi_mean = yi.mean()
+        xi_dev = xi - xi_mean
+        var_xi = np.dot(xi_dev, xi_dev)
+        if var_xi == 0.0:
+            s = 0.0
+            inc = yi_mean
+        else:
+            s = np.dot(xi_dev, yi - yi_mean) / var_xi
+            inc = yi_mean - s * xi_mean
+        boot_slopes[i] = s
+        boot_intercepts[i] = inc
+
+    s_ci = np.percentile(boot_slopes, [2.5, 97.5])
+    i_ci = np.percentile(boot_intercepts, [2.5, 97.5])
+
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "slope_ci": (float(s_ci[0]), float(s_ci[1])),
+        "intercept_ci": (float(i_ci[0]), float(i_ci[1])),
+        "slope_se": float(np.std(boot_slopes, ddof=1)),
+        "intercept_se": float(np.std(boot_intercepts, ddof=1)),
+    }
 
 
 @st.cache_data(show_spinner=False, max_entries=1)
@@ -603,8 +675,8 @@ with st.container(border=True):
         market_pred = scored[m_col].to_numpy(dtype=float)
         occ = (outcomes == res_code).astype(int)
 
-    betty_cal = calibration_bins(betty_pred, occ)
-    market_cal = calibration_bins(market_pred, occ)
+    betty_cal, betty_raw = calibration_bins(betty_pred, occ)
+    market_cal, market_raw = calibration_bins(market_pred, occ)
 
     if betty_cal.empty and market_cal.empty:
         st.caption("No predictions in this selection.")
@@ -716,6 +788,14 @@ with st.container(border=True):
             width="stretch",
             config={"displayModeBar": False},
             alt=f"Betty and market observed outcome rates by predicted-probability bin for {selection.lower()} outcomes compared with perfect calibration.",
+        )
+        cal_stats = calibration_slope_intercept(
+            betty_raw["predicted"].to_numpy(dtype=float),
+            betty_raw["occurred"].to_numpy(dtype=float),
+        )
+        st.caption(
+            f"Slope: {cal_stats['slope']:.2f} [{cal_stats['slope_ci'][0]:.2f}, {cal_stats['slope_ci'][1]:.2f}], "
+            f"Intercept: {cal_stats['intercept']:.2f} [{cal_stats['intercept_ci'][0]:.2f}, {cal_stats['intercept_ci'][1]:.2f}]"
         )
 
 with st.container(border=True):
