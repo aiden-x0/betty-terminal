@@ -345,15 +345,16 @@ with st.container(border=True):
     with st.expander("Method and pre-registered rule"):
         st.markdown(
             "1. Frozen until the first review: model (Betty Core v1), benchmark "
-            "(proportional devig of the Football-Data average closing odds, AvgC; Shin is not used yet) "
+            "(proportional devig of the Football-Data average closing odds, AvgC; Shin devig was tested as a sensitivity, see point 6) "
             "and filters (none; all matches).\n"
             "2. Edge = market log loss minus Betty log loss per match; positive favours Betty.\n"
             "3. Review at 300 forward matches: an interval entirely above zero counts as evidence of an edge. "
             "Anything else is inconclusive, not proof of no edge. If inconclusive, collection continues to a second review at 1,000 matches.\n"
             "4. Sensitivity: with the backtest spread of about 0.17 log loss per match, 300 matches can reliably detect only a true edge of about +0.028 per match or more, and 1,000 matches about +0.015. Smaller edges will usually look inconclusive.\n"
             "5. Backtest reference: Betty trails the market by about 0.022 log loss per match over 6,534 matches, with a 95% interval of about -0.026 to -0.018.\n"
-            "6. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
-            "7. This is a statistical research display, not betting advice."
+            "6. Shin sensitivity (backtest only): with a Shin devig of the raw Football-Data average closing odds, the edge is -0.0227 per match (95% interval -0.0270 to -0.0184), against -0.0219 with the proportional devig used above. The difference is 0.0008 per match, no league changes sign, and 2 of 6,534 closing-odds rows with an implausible margin (below 1.0) do not change either result. Shin is not applied to the forward test, which has no raw odds in this export.\n"
+            "7. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
+            "8. This is a statistical research display, not betting advice."
         )
 
 with st.container(border=True):
