@@ -139,6 +139,36 @@ def bootstrap_mean_interval(
     return float(lower), float(upper)
 
 
+@st.cache_data(show_spinner=False)
+def scoring_rule_edges(
+    betty: np.ndarray, market: np.ndarray, outcome_idx: np.ndarray
+) -> dict[str, np.ndarray]:
+    betty_probs = np.asarray(betty, dtype=float)
+    market_probs = np.asarray(market, dtype=float)
+    outcomes = np.asarray(outcome_idx, dtype=int)
+    n = len(outcomes)
+
+    one_hot = np.zeros((n, 3), dtype=float)
+    one_hot[np.arange(n), outcomes] = 1.0
+
+    brier_betty = np.sum((betty_probs - one_hot) ** 2, axis=1)
+    brier_market = np.sum((market_probs - one_hot) ** 2, axis=1)
+
+    cum_betty = np.cumsum(betty_probs[:, :2], axis=1)
+    cum_market = np.cumsum(market_probs[:, :2], axis=1)
+    cum_one_hot = np.cumsum(one_hot[:, :2], axis=1)
+
+    rps_betty = 0.5 * np.sum((cum_betty - cum_one_hot) ** 2, axis=1)
+    rps_market = 0.5 * np.sum((cum_market - cum_one_hot) ** 2, axis=1)
+
+    return {
+        "brier_betty": brier_betty,
+        "brier_market": brier_market,
+        "rps_betty": rps_betty,
+        "rps_market": rps_market,
+    }
+
+
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_and_process_data(
     data_path: str,
@@ -356,6 +386,63 @@ with st.container(border=True):
             "7. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
             "8. This is a statistical research display, not betting advice."
         )
+
+with st.container(border=True):
+    st.subheader("Scoring rules")
+    st.caption(
+        "Log loss is the headline metric and the metric of the pre-registered rule. "
+        "Brier score and RPS are supporting views of the same predictions. "
+        "Lower scores are better; edge = market score minus Betty score, positive favours Betty. "
+        "Intervals: 95% paired bootstrap, seed 0."
+    )
+    scoring_rows = []
+    for phase_name in ["Backtest", "Forward"]:
+        phase_subset = scored[scored["phase"] == phase_name]
+        n_phase = len(phase_subset)
+        if n_phase == 0:
+            continue
+
+        b_probs = phase_subset[PROBABILITY_COLUMNS].to_numpy(dtype=float)
+        b_probs = b_probs / b_probs.sum(axis=1, keepdims=True)
+        m_probs = phase_subset[MARKET_COLUMNS].to_numpy(dtype=float)
+        o_indices = np.array([OUTCOME_INDEX[r] for r in phase_subset["actual_result"]], dtype=int)
+
+        rules = scoring_rule_edges(b_probs, m_probs, o_indices)
+
+        metric_specs = [
+            (
+                "Log loss",
+                phase_subset["betty_log_loss"].to_numpy(dtype=float),
+                phase_subset["market_log_loss"].to_numpy(dtype=float),
+            ),
+            ("Brier score", rules["brier_betty"], rules["brier_market"]),
+            ("RPS", rules["rps_betty"], rules["rps_market"]),
+        ]
+
+        for metric_name, b_vals, m_vals in metric_specs:
+            b_mean = float(np.mean(b_vals))
+            m_mean = float(np.mean(m_vals))
+            e_vals = m_vals - b_vals
+            e_mean = float(np.mean(e_vals))
+
+            if n_phase >= 10:
+                low_ci, high_ci = bootstrap_mean_interval(e_vals)
+                ci_text = f"{low_ci:+.4f} to {high_ci:+.4f}"
+            else:
+                ci_text = "n/a"
+
+            scoring_rows.append({
+                "Sample": phase_name,
+                "Metric": metric_name,
+                "Betty": f"{b_mean:.4f}",
+                "Market": f"{m_mean:.4f}",
+                "Edge per match": f"{e_mean:+.4f}",
+                "95% interval": ci_text,
+                "n": f"{n_phase:,}",
+            })
+
+    scoring_df = pd.DataFrame(scoring_rows)
+    st.dataframe(scoring_df, hide_index=True, use_container_width=True)
 
 with st.container(border=True):
     st.subheader("Edge curve")
