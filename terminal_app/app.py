@@ -26,6 +26,7 @@ go.Candlestick.__init__ = _patched_candlestick_init
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "backtest_predictions_v1.csv"
 FORWARD_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "forward_scores_matches.csv"
+RAW_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "raw_closing_odds_v1.csv"
 FORWARD_MODEL_VERSION = "v1"
 OUTCOME_INDEX = {"H": 0, "D": 1, "A": 2}
 PROBABILITY_COLUMNS = ["p_home", "p_draw", "p_away"]
@@ -379,6 +380,14 @@ def prepare_betty_picks(df: pd.DataFrame) -> pd.DataFrame:
     res["top_market_odds"] = market_odds
     res["pick_won"] = (top_pick_indices == actual_indices)
 
+    raw_cols = ["AvgCH", "AvgCD", "AvgCA"]
+    if all(col in res.columns for col in raw_cols):
+        raw_matrix = res[raw_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        raw_odds = raw_matrix[np.arange(len(res)), top_pick_indices]
+        res["raw_market_odds"] = pd.Series(raw_odds, index=res.index).fillna(res["top_market_odds"])
+    else:
+        res["raw_market_odds"] = res["top_market_odds"]
+
     full_kelly = np.where(
         market_odds > 1.0,
         ((betty_prob * market_odds) - 1.0) / (market_odds - 1.0),
@@ -414,16 +423,22 @@ def simulate_bankroll_and_drawdown(
     current_qk = 100.0
     current_flat = 100.0
 
-    for has_edge, qk_frac, odds, won in zip(
+    raw_odds_series = (
+        filtered_df["raw_market_odds"]
+        if "raw_market_odds" in filtered_df.columns
+        else filtered_df["top_market_odds"]
+    )
+
+    for has_edge, qk_frac, raw_odds, won in zip(
         filtered_df["quarter_kelly"] > 0,
         filtered_df["quarter_kelly"],
-        filtered_df["top_market_odds"],
+        raw_odds_series,
         filtered_df["pick_won"],
     ):
         if has_edge:
             if won:
-                current_qk += current_qk * qk_frac * (odds - 1.0)
-                current_flat += (odds - 1.0)
+                current_qk += current_qk * qk_frac * (raw_odds - 1.0)
+                current_flat += (raw_odds - 1.0)
             else:
                 current_qk -= current_qk * qk_frac
                 current_flat -= 1.0
@@ -548,6 +563,14 @@ def load_and_process_data(
         .mean()
         .set_axis(rolling_columns, axis="columns")
     )
+    raw_odds_path = Path(data_path).parent / "raw_closing_odds_v1.csv"
+    if not raw_odds_path.exists():
+        raw_odds_path = RAW_DATA_PATH
+    if not raw_odds_path.exists():
+        raw_odds_path = Path("data/raw_closing_odds_v1.csv")
+    if raw_odds_path.exists():
+        raw_odds = pd.read_csv(raw_odds_path)
+        scored = scored.merge(raw_odds, on="match_id", how="left")
     return scored, len(data) - len(scored)
 
 
@@ -1355,7 +1378,7 @@ st.divider()
 st.header("Experimental: hypothetical backtest simulations (in-sample)")
 st.warning(
     "Hypothetical, in-sample. Filters were chosen by looking at this same backtest. "
-    "Returns use devigged closing odds with no bookmaker margin, so real results would be worse. "
+    "Returns use raw, margin-inclusive closing odds. "
     "Not evidence of an edge; judge only on forward results."
 )
 
