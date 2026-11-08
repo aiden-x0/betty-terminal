@@ -387,6 +387,12 @@ def prepare_betty_picks(df: pd.DataFrame) -> pd.DataFrame:
         labels=["< 1.5 (Heavy Fav)", "1.5-2.0 (Fav)", "2.0-3.0 (Dog)", "> 3.0 (Longshot)"],
         include_lowest=True,
     )
+    res["pick_odds_bracket"] = pd.cut(
+        res["top_market_odds"],
+        bins=[1.0, 1.5, 2.0, 3.0, 100.0],
+        labels=["< 1.5 (Heavy Fav)", "1.5-2.0 (Fav)", "2.0-3.0 (Dog)", "> 3.0 (Longshot)"],
+        include_lowest=True,
+    )
     return res
 
 
@@ -1434,8 +1440,8 @@ with st.container(border=True):
                 y=drawdown_series,
                 mode="lines",
                 fill="tozeroy",
-                fillcolor="rgba(255, 50, 50, 0.2)",
-                line_color="rgba(255, 50, 50, 0.8)",
+                fillcolor="rgba(240, 184, 88, 0.2)",
+                line_color="rgba(240, 184, 88, 0.8)",
                 name="Drawdown",
                 hovertemplate="Match %{x}<br>Drawdown %{y:.3f}<extra></extra>",
             )
@@ -1491,16 +1497,15 @@ with st.container(border=True):
 with st.container(border=True):
     st.subheader("Performance Matrix (Mean Edge by League & Odds)")
     st.caption(
-        "Bivariate heatmap of mean edge per match (market log loss minus Betty log loss) "
-        "across leagues and devigged market odds brackets of the actual match outcome."
+        "Mean edge per match (market log loss minus Betty log loss) by league and by the devigged closing odds of Betty's top pick, which are known before kickoff. Cells with few matches are noisy; this is descriptive, not a place to look for an edge."
     )
     if filtered_sim.empty:
         st.info("No matches match the selected strategy filters.", icon=":material/info:")
     else:
         performance_matrix = (
-            filtered_sim.groupby(["league", "odds_bracket"], observed=False)["edge"]
+            filtered_sim.groupby(["league", "pick_odds_bracket"], observed=False)["edge"]
             .mean()
-            .unstack("odds_bracket")
+            .unstack("pick_odds_bracket")
         )
         matrix_figure = go.Figure(
             go.Heatmap(
@@ -1508,9 +1513,9 @@ with st.container(border=True):
                 x=list(performance_matrix.columns),
                 y=list(performance_matrix.index),
                 colorscale=[
-                    [0, "rgba(255, 50, 50, 0.8)"],
-                    [0.5, "rgba(14, 17, 23, 1)"],
-                    [1, "rgba(50, 255, 50, 0.8)"],
+                    [0, "rgba(240, 184, 88, 0.8)"],
+                    [0.5, "rgba(14, 20, 27, 1)"],
+                    [1, "rgba(67, 217, 181, 0.8)"],
                 ],
                 zmid=0,
                 colorbar={"title": "Mean edge"},
@@ -1528,7 +1533,7 @@ with st.container(border=True):
             font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
             hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
             margin={"l": 12, "r": 12, "t": 24, "b": 12},
-            xaxis_title="Odds bracket",
+            xaxis_title="Odds bracket (Betty's top pick, devigged closing odds)",
             yaxis_title="League",
             xaxis={"gridcolor": PLOT_GRID},
             yaxis={
@@ -1632,80 +1637,3 @@ with st.container(border=True):
             alt="Bankroll simulation comparing Quarter Kelly compounding vs 1-unit flat staking.",
         )
 
-with st.container(border=True):
-    st.subheader("Closing Line Value (CLV) Tracking")
-    if "top_open_odds" not in filtered_sim.columns:
-        st.info("CLV Tracking offline: Awaiting 'top_open_odds' from the backend data pipeline.")
-    else:
-        st.caption(
-            "Closing Line Value (CLV) relative to opening odds for Betty's top pick. "
-            "Positive values indicate market odds shortened toward Betty's prediction."
-        )
-        if filtered_sim.empty:
-            st.info("No matches match the selected strategy filters.", icon=":material/info:")
-        else:
-            clv_x = np.arange(1, len(filtered_sim) + 1)
-            clv_colors = np.where(
-                filtered_sim["clv_pct"] > 0,
-                "rgba(50, 255, 50, 0.85)",
-                "rgba(255, 50, 50, 0.85)",
-            ).tolist()
-            clv_figure = go.Figure(
-                go.Scatter(
-                    x=clv_x,
-                    y=filtered_sim["clv_pct"],
-                    mode="markers",
-                    marker={"color": clv_colors, "size": 6, "opacity": 0.8},
-                    name="CLV",
-                    hovertemplate="Match %{x}<br>CLV: %{y:+.2%}<extra></extra>",
-                )
-            )
-            clv_figure.add_hline(
-                y=0,
-                line_color="#72808c",
-                line_dash="dash",
-                line_width=2,
-            )
-            if sim_backtest_count > 0 and sim_forward_count > 0:
-                clv_figure.add_vline(
-                    x=sim_backtest_count + 0.5,
-                    line_color="#f0b858",
-                    line_dash="dash",
-                    annotation_text="Forward Test Started",
-                    annotation_position="top",
-                )
-            clv_figure.update_layout(
-                template="plotly_dark",
-                paper_bgcolor=PLOT_BACKGROUND,
-                plot_bgcolor=PLOT_BACKGROUND,
-                font={"family": PLOT_FONT_FAMILY, "color": "#dce5ec"},
-                hoverlabel={"font": {"family": PLOT_FONT_FAMILY}},
-                margin={"l": 12, "r": 12, "t": 24, "b": 12},
-                xaxis_title="Match index",
-                yaxis_title="Closing Line Value",
-                xaxis={
-                    "gridcolor": PLOT_GRID,
-                    "showspikes": True,
-                    "spikemode": "across",
-                    "spikesnap": "cursor",
-                    "spikethickness": 1,
-                    "spikedash": "dot",
-                    "spikecolor": "rgba(255, 255, 255, 0.3)",
-                },
-                yaxis={
-                    "gridcolor": PLOT_GRID,
-                    "tickformat": ".1%",
-                    "showspikes": True,
-                    "spikemode": "across",
-                    "spikesnap": "cursor",
-                    "spikethickness": 1,
-                    "spikedash": "dot",
-                    "spikecolor": "rgba(255, 255, 255, 0.3)",
-                },
-            )
-            st.plotly_chart(
-                clv_figure,
-                width="stretch",
-                config={"displayModeBar": False},
-                alt="Closing Line Value scatter plot showing price movement toward or away from Betty's predictions.",
-            )
