@@ -674,8 +674,9 @@ with st.container(border=True):
             "4. Sensitivity: with the backtest spread of about 0.17 log loss per match, 300 matches can reliably detect only a true edge of about +0.028 per match or more, and 1,000 matches about +0.015. Smaller edges will usually look inconclusive.\n"
             "5. Backtest reference: Betty trails the market by about 0.022 log loss per match over 6,534 matches, with a 95% interval of about -0.026 to -0.018.\n"
             "6. Shin sensitivity (backtest only): with a Shin devig of the raw Football-Data average closing odds, the edge is -0.0227 per match (95% interval -0.0270 to -0.0184), against -0.0219 with the proportional devig used above. The difference is 0.0008 per match, no league changes sign, and 2 of 6,534 closing-odds rows with an implausible margin (below 1.0) do not change either result. Shin is not applied to the forward test, which has no raw odds in this export.\n"
-            "7. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
-            "8. This is a statistical research display, not betting advice."
+            "7. Blend and time split (backtest only): the best log-loss mix of Betty and the market puts weight 0.000 on Betty (fitted on the whole backtest and bounded at 0, so the interval [0.000, 0.000] reflects the boundary, not perfect certainty). Betty's edge is -0.0232 on the older half (n=3,267) and -0.0206 on the newer half (n=3,267); the difference is within noise.\n"
+            "8. Timing: forward predictions are made 3.8 to 13.8 hours before kickoff. The capture time of the closing odds is not independently verified.\n"
+            "9. This is a statistical research display, not betting advice."
         )
 
 with st.container(border=True):
@@ -1378,7 +1379,10 @@ st.divider()
 st.header("Experimental: hypothetical backtest simulations (in-sample)")
 st.warning(
     "Hypothetical, in-sample. Filters were chosen by looking at this same backtest. "
-    "Returns use raw, margin-inclusive closing odds. "
+    "Stake sizes (Kelly) are computed from devigged closing odds, which no bookmaker offers. "
+    "Payouts on the 6,534 backtest matches use raw, margin-inclusive closing odds; "
+    "payouts on the forward matches fall back to devigged odds, so the curve mixes two price types. "
+    "The blend test in the Method panel found no weight on Betty, so Kelly staking assumes an advantage the evidence does not show. "
     "Not evidence of an edge; judge only on forward results."
 )
 
