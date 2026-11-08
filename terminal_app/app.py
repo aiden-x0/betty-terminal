@@ -5,23 +5,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from _plotly_utils.basevalidators import ColorValidator
-
-if "amber" not in ColorValidator.named_colors:
-    ColorValidator.named_colors.append("amber")
-
-_orig_candlestick_init = go.Candlestick.__init__
-
-
-def _patched_candlestick_init(self, *args, **kwargs):
-    if "fillcolor" in kwargs:
-        fc = kwargs.pop("fillcolor")
-        kwargs.setdefault("increasing_fillcolor", fc)
-        kwargs.setdefault("decreasing_fillcolor", fc)
-    _orig_candlestick_init(self, *args, **kwargs)
-
-
-go.Candlestick.__init__ = _patched_candlestick_init
 
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "backtest_predictions_v1.csv"
@@ -839,8 +822,10 @@ with st.container(border=True):
                     low=complete_candles["low"],
                     close=complete_candles["close"],
                     name="Complete windows",
-                    increasing_line_color="teal",
-                    decreasing_line_color="amber",
+                    increasing_line_color=ACCENT,
+                    decreasing_line_color="#f0b858",
+                    increasing_fillcolor="rgba(67, 217, 181, 0.45)",
+                    decreasing_fillcolor="rgba(240, 184, 88, 0.45)",
                 )
             )
         incomplete_candles = candle_df[~candle_df["is_complete"]]
@@ -853,9 +838,10 @@ with st.container(border=True):
                     low=incomplete_candles["low"],
                     close=incomplete_candles["close"],
                     name="Current window (in progress)",
-                    increasing_line_color="teal",
-                    decreasing_line_color="amber",
-                    fillcolor="rgba(0,0,0,0)",
+                    increasing_line_color=ACCENT,
+                    decreasing_line_color="#f0b858",
+                    increasing_fillcolor="rgba(0,0,0,0)",
+                    decreasing_fillcolor="rgba(0,0,0,0)",
                 )
             )
         candle_fig.update_layout(
@@ -1164,7 +1150,7 @@ with st.container(border=True):
                 x=open_home,
                 y=close_home,
                 mode="markers",
-                marker=dict(opacity=0.3, size=4, color="teal"),
+                marker=dict(opacity=0.3, size=4, color=ACCENT),
                 name="Home probability",
                 hovertemplate="Opening: %{x:.1%}<br>Closing: %{y:.1%}<extra></extra>",
             )
